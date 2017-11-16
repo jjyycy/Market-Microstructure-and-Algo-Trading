@@ -1,0 +1,188 @@
+---
+title: |
+  MMAT Homework 4
+author: "Jingyi Guo(jingyig1), Jiawen Zhang(jiawenz2) Pittsburgh Campus"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+library(rkdb)
+library(calibrate)
+```
+
+## Problem 1
+
+```{r 1}
+# calculate intraday vol
+intraday_vol = function(sym, h, dtsamp=10, dtbin=15, enddate='2017.08.25') 
+  {
+  query = paste("{[dtsamp; dtbin; symbol; enddate]
+f: {[dtsamp; dtbin; symbol; d] 
+ticksiz: (flip select inst, minpxincr from instinfo where inst=sym2inst[symbol])[`minpxincr][0];
+binTS: dtbin * 00:01:00.00n;
+sampleTS: dtsamp * 00:00:01.00n;
+nbins: 23 * 60 div dtbin;
+nsamples: 23 * 3600 div dtsamp;
+samples: ([] rcvtime: -07:00:00.000n + sampleTS * til nsamples);
+samples: update tbin: floor rcvtime % binTS from samples;
+data: select tbin,rcvtime,mid from aj[`rcvtime; samples;
+  select mid: .5*(bid+ask)%ticksiz, rcvtime from quote where date=d,sym=symbol];
+vars: select v: sum (1 _ deltas mid) xexp 2 by tbin from data;
+vars
+};
+dtlist: date where date<=enddate;
+reslist: f'[dtsamp; dtbin; symbol; dtlist];
+result: ({[r;t]r pj t}/) reslist;
+select hour:tbin%60 div dtbin, v:v % count dtlist from result
+} [",dtsamp,";",dtbin,";`",sym,";",enddate,"]", sep='')
+  res = execute(h, query)
+  return(res)
+}
+
+h.IR = open_connection('172.19.10.167', 6000)
+h.OT = open_connection('172.19.10.167', 7000)
+ZN = intraday_vol('ZNU7', h.IR)
+NG = intraday_vol('NGU7', h.OT)
+
+
+# plot
+plot(ZN, type='n',xlab='Hour', ylab='Price variance in 15 minutes', 
+     main='ZN 2017-07-31 to 08-25', xaxt="n")
+axis(side=1, at=seq(-6,16,2))
+abline(h=0, col='grey', lty=2)
+points(ZN, col='darkred', type='b', pch=0, bg=1)
+
+plot(NG, type='n',xlab='Hour', ylab='Price variance in 15 minutes', 
+     main='NG 2017-07-31 to 08-25', xaxt="n")
+axis(side=1, at=seq(-6,16,2))
+abline(h=0, col='grey', lty=2)
+points(NG, col='darkred', type='b', pch=0, bg=1)
+```
+
+## Problem 2
+# a)
+```{r 2a Function Definition}
+tickvol = function(db, syms,dmin, dmax, tmin, tmax,dtmax=60) 
+  {
+  sendquery = function(sym) 
+    {
+      query = paste("{[symbol;dmin;dmax;tmin;tmax;dtmax]
+f: {[symbol;tmin;tmax;dtmax;d]
+samples: ([]rcvtime: (tmin*01:00:00.00n) + 00:00:01.00n * til 1+3600*tmax-tmin);
+data: select rcvtime, mid from aj[`rcvtime; samples;
+    select mid: .5*(bid+ask), rcvtime from quote where date=d,sym=symbol];
+res: dtmax#0.0;
+lag: 1;
+while [lag<=dtmax;
+lagdata: 1!select rcvtime:rcvtime+lag*00:00:01.00n, lagmid:mid from data;
+joined: select rcvtime,diff:(mid-lagmid)%mid from data ij lagdata;
+res[lag-1]: sqrt(avg((flip joined)[`diff] xexp 2))%lag;
+lag: lag+1;
+];
+res
+};
+
+dtlist: date where date<=dmax;
+dtlist: dtlist where dtlist>=dmin;
+reslist: f'[symbol;tmin;tmax;dtmax;dtlist];
+result: ((+/) reslist) % count dtlist;
+result
+} [`",sym,";",dmin,";",dmax,";",tmin,";",tmax,";",dtmax,"]",sep='')
+      res = execute(db, query)
+      return(res)
+  }
+  
+  dts = 1:dtmax
+  results = matrix(0, nrow=length(syms), ncol=length(dts))
+  rownames(results) = syms
+  colnames(results) = dts
+  
+  for (i in 1:length(syms)) 
+    {
+      sym = syms[i]
+      results[i,] = sendquery(sym)
+  }
+  return(results)
+}
+
+tickvol2a = tickvol(h.IR, c('ZTU7','ZFU7','ZNU7','ZBU7'), '2017.07.31', '2017.08.25', 7, 15)
+
+plot(1:60, tickvol2a['ZBU7',], type='n', xlab='Lag', ylab='Volatility',
+     ylim=c(0,0.00004), xlim=c(0,65))
+lines(1:60, tickvol2a['ZTU7',])
+lines(1:60, tickvol2a['ZFU7',])
+lines(1:60, tickvol2a['ZNU7',])
+lines(1:60, tickvol2a['ZBU7',])
+text(x=rep(60,4), y=c(tickvol2a['ZTU7',60],tickvol2a['ZFU7',60],tickvol2a['ZNU7',60],tickvol2a['ZBU7',60]), pos=4, labels = c('ZTU7','ZFU7','ZNU7','ZBU7'))
+```
+
+Explanation:
+  
+  Volatilities of these interest rate products ordered as ZT < ZF < ZN < ZB because:
+  The longer the maturity of your bond investments, the greater the price volatility.The reason is that the maturity value of the long-term bond, as well as many of the interest payments that are being paid, are future cash flows that are very distant points in the future. If interest rates rise, those very distant cash flows of the long-term bond are discounted in value significantly, and the price of the long-term bond falls in the market more abruptly.
+  
+  The serial auto-correlation is negative, and we have : $\displaystyle \rho = -\frac{1-\eta}{1+\eta}$, where$\eta=\frac{\sigma_L^2}{\sigma_S^2}$. 
+  
+  So the volatility measure increases as the time lag decreases.
+
+# b)
+The function is given below:
+```{r 2b Function Definition}
+tickcor = function(
+  db,          #  handle to historical database
+  sym1,        #  Globex symbol or symbols
+  sym2,        #  Globex symbol or symbols
+  dmin, dmax,  #  min and max date
+  tmin, tmax,  #  min and max times, hours after midnight
+  dtmax=60) {  #  max time difference in seconds
+  
+  query = paste("{[sym1;sym2;dmin;dmax;tmin;tmax;dtmax]
+f: {[sym1;sym2;tmin;tmax;dtmax;d]
+samples: ([]rcvtime: (tmin*01:00:00.00n) + 00:00:01.00n * til 1+3600*tmax-tmin);
+data1: select rcvtime, mid from aj[`rcvtime; samples;
+    select mid: .5*(bid+ask), rcvtime from quote where date=d,sym=sym1];
+data2: select rcvtime, mid from aj[`rcvtime; samples;
+    select mid: .5*(bid+ask), rcvtime from quote where date=d,sym=sym2];
+res: dtmax#0.0;
+lag: 1;
+while [lag<=dtmax;
+lagdata1: 1!select rcvtime:rcvtime+lag*00:00:01.00n, lagmid:mid from data1;
+diff1: select rcvtime,diff:(mid-lagmid)%lagmid from data1 ij lagdata1;
+lagdata2: 1!select rcvtime:rcvtime+lag*00:00:01.00n, lagmid:mid from data2;
+diff2: select rcvtime,diff:(mid-lagmid)%lagmid from data2 ij lagdata2;
+res[lag-1]: (flip diff1)[`diff] cor (flip diff2)[`diff];
+lag: lag+1;
+];
+res
+};
+
+dtlist: date where date<=dmax;
+dtlist: dtlist where dtlist>=dmin;
+reslist: f'[sym1;sym2;tmin;tmax;dtmax;dtlist];
+result: ((+/) reslist) % count dtlist;
+result
+} [`",sym1,";`",sym2,";",dmin,";",dmax,";",tmin,";",tmax,";",dtmax,"]",sep='')
+  res = execute(db, query)
+  return(res)
+}
+
+tickcor2b = tickcor(h.IR, 'ZFU7', 'ZNU7', '2017.07.31', '2017.08.25', 7, 15)
+
+plot(tickcor2b, type='l', xlab='Lag', ylab='Correlation',main='ZFU7/ZNU7 2017-07-31 to 08-25')
+```
+
+# c)
+```{r }
+tickvol3 = tickvol(h.OT,c('CLZ7','HOZ7'),'2017.07.31','2017.09.01',7,15)
+plot(1:60, tickvol3['HOZ7',], type='n', xlab='Lag', ylab='Volatility', xlim=c(0,65),ylim=c(7e-5,8.5e-5), main='2017-07-31 to 09-01')
+lines(1:60, tickvol3['CLZ7',])
+lines(1:60, tickvol3['HOZ7',])
+text(x=rep(60,4), y=c(tickvol3['CLZ7',60],tickvol3['HOZ7',60]), pos=4, labels = c('CLZ7','HOZ7'))
+
+tickcor3 = tickcor(h.IR, 'CLZ7', 'HOZ7', '2017.07.31', '2017.09.01', 7, 15)
+plot(tickcor2b, type='l', xlab='Lag', ylab='Correlation',main='CLZ7/HOZ7 2017-07-31 to 08-25')
+```
+
+Explanation:
+
+For Crude Oil, volatility on short time horizons is larger than that on longer time horizons. While for Treasury futures, volatility does not increase on short time horizons. As shown in Problem 3 of Homework 2, ZB is on the upper right of CL, indicating that ZB has higher _average quote size/average aggressive trade size_ ratio and _reversion parameter eta_ compared to CL.
